@@ -126,21 +126,28 @@ int wmain(const int argc, const wchar_t* const argv[])
                         char buffer[256];
                         ZydisFormatterFormatInstruction(&formatter, &instruction, buffer, sizeof(buffer), ZYDIS_RUNTIME_ADDRESS_NONE);
                         printf(buffer);
-                        char ripjmp[] = { 0xFF, 0x25 };
-                        if (memcmp(instruction.operands, ripjmp, 2)) {
-                            int rel = *reinterpret_cast<int*>(hot + offset + 2);
-                            if (rel == 0) {
-                                printf(" (jump to %llx)\n", *reinterpret_cast<uint64_t*>(hot + offset + 6));
-                                offset += 13;
+
+                        if (instruction.mnemonic == ZYDIS_MNEMONIC_JMP)
+                        {
+                            switch (instruction.opcode) {
+                            case 0xFF:
+                            {
+                                int rel = *reinterpret_cast<int*>(hot + offset + 2);
+                                if (rel == 0) {
+                                    printf(" (jump to %llx)\n", *reinterpret_cast<uint64_t*>(hot + offset + 6));
+                                    offset += 13;
+                                    continue;
+                                }
+                                break;
+                            }
+                            case 0xE9:
+                            {
+                                int rel = *reinterpret_cast<int*>(hot + offset + 1);
+                                printf(" (jump to %p)\n", runtime_address + 5 + rel);
+                                offset += 5;
                                 continue;
                             }
-                        }
-
-                        if (instruction.opcode == 0xE9) {
-                            int rel = *reinterpret_cast<int*>(hot + offset + 1);
-                            printf(" (jump to %p)\n", runtime_address + 5 + rel);
-                            offset += 5;
-                            continue;
+                            }
                         }
 
                         printf("\n");
