@@ -32,6 +32,7 @@ bool GetProcessModules(const DWORD pid, vector<MODULEENTRY32W>& modules) {
 }
 
 DWORD GetSections(BYTE* const pe, vector<PIMAGE_SECTION_HEADER>& sections) {
+    if (!pe) return 0;
     const PIMAGE_DOS_HEADER dos = reinterpret_cast<PIMAGE_DOS_HEADER>(pe);
     const PIMAGE_NT_HEADERS nt = reinterpret_cast<PIMAGE_NT_HEADERS>(pe + dos->e_lfanew);
     uint32_t numSec = nt->FileHeader.NumberOfSections;
@@ -51,12 +52,19 @@ cleanup:
     if (!status) { delete[] data; data = nullptr; }
     return size;
 code:
-    if (!ReadProcessMemory(proc, modEntry.modBaseAddr, data, modEntry.modBaseSize, &size)) goto cleanup;
+    if (!ReadProcessMemory(proc, modEntry.modBaseAddr, data, modEntry.modBaseSize, &size)) { 
+        if (GetLastError() == ERROR_PARTIAL_COPY) {
+            delete[] data;
+            data = new BYTE[size];
+            if (ReadProcessMemory(proc, modEntry.modBaseAddr, data, size, &size)) { status = true; };
+        } 
+        goto cleanup;
+    };
     status = true;
     goto cleanup;
 }
 
-
+// todo: reformat code 
 int wmain(const int argc, const wchar_t* const argv[])
 {
     if (argc != 2) { printf("HooksFinder.exe \"process.exe\".\n"); return 1; }
@@ -84,16 +92,16 @@ int wmain(const int argc, const wchar_t* const argv[])
         BYTE* hot = nullptr;
         goto code;
     cleanup:
-        if (mapping && mapping != INVALID_HANDLE_VALUE) CloseHandle(mapping);
-        if (file && file != INVALID_HANDLE_VALUE) CloseHandle(file);
+        if (mapping) CloseHandle(mapping);
+        if (file) CloseHandle(file);
         if (cold) UnmapViewOfFile(cold);
         if (hot) { delete[] hot; }
         continue;
     code:
         file = CreateFileW(mod.szExePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (!file || file == INVALID_HANDLE_VALUE) goto cleanup;
+        if (file == INVALID_HANDLE_VALUE) goto cleanup;
         mapping = CreateFileMappingW(file, 0, PAGE_READONLY | SEC_IMAGE, 0, 0, 0);
-        if (!mapping || mapping == INVALID_HANDLE_VALUE) goto cleanup;
+        if (mapping == INVALID_HANDLE_VALUE) goto cleanup;
         cold = reinterpret_cast<BYTE*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0));
         if (!cold) goto cleanup;
         vector<PIMAGE_SECTION_HEADER> coldSections;
@@ -102,25 +110,52 @@ int wmain(const int argc, const wchar_t* const argv[])
         vector<PIMAGE_SECTION_HEADER> hotSections;
         if (!GetSections(hot, hotSections)) goto cleanup;
         if (hotSections.size() != coldSections.size()) goto cleanup;
+        
         printf("%p\t%ls\n", mod.modBaseAddr, mod.szModule);
         for (auto i = 0u; i < coldSections.size(); i++) {
             auto& coldSect = coldSections[i];
             auto& hotSect = hotSections[i];
             const ZyanUSize length = coldSect->Misc.VirtualSize;
-            for (ZyanUSize offset = coldSect->VirtualAddress; offset < length; offset++) {
+            for (ZyanUSize offset = coldSect->VirtualAddress; offset < length; ) {
                 BYTE* runtime_address = mod.modBaseAddr + offset;
+                bool result = false;
                 if (cold[offset] != hot[offset]) {
                     printf("%p\t", runtime_address);
                     ZydisDecodedInstruction instruction;
                     if (ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&decoder, hot + offset, length - offset, &instruction))) {
                         char buffer[256];
-                        ZydisFormatterFormatInstruction(&formatter, &instruction, buffer, sizeof(buffer), reinterpret_cast<ZyanU64>(runtime_address));
-                        puts(buffer);
+                        ZydisFormatterFormatInstruction(&formatter, &instruction, buffer, sizeof(buffer), ZYDIS_RUNTIME_ADDRESS_NONE);
+                        printf(buffer);
+                        char ripjmp[] = { 0xFF, 0x25 };
+                        if (memcmp(instruction.operands, ripjmp, 2)) {
+                            int rel = *reinterpret_cast<int*>(hot + offset + 2);
+                            if (rel == 0) {
+                                printf(" (jump to %llx)\n", *reinterpret_cast<uint64_t*>(hot + offset + 6));
+                                offset += 13;
+                                continue;
+                            }
+                        }
+
+                        if (instruction.opcode == 0xE9) {
+                            int rel = *reinterpret_cast<int*>(hot + offset + 1);
+                            printf(" (jump to %p)\n", runtime_address + 5 + rel);
+                            offset += 5;
+                            continue;
+                        }
+
+                        printf("\n");
                         offset += instruction.length;
+                        continue;
                     }
+                    else {
+                        printf("0x%x\n", hot[offset]);
+                    }
+                  
                 }
+                offset++;
             }
         }
+        printf("-----------------------------------------------------------------------\n");
         goto cleanup;
     }
     printf("Finished, took %lld ms.", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - begin).count());
