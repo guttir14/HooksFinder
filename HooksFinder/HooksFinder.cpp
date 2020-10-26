@@ -5,7 +5,6 @@
 #include <Psapi.h>
 #include <TlHelp32.h>
 #include <chrono>
-#include <fmt/os.h>
 #include <filesystem>
 
 #define ZYDIS_STATIC_DEFINE
@@ -87,7 +86,7 @@ int wmain(const int argc, const wchar_t* const argv[])
     if (bWow64) { printf("Process is under wow64\n"); return 1; }
     if (ZYAN_FAILED(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_ADDRESS_WIDTH_64))) { printf("ZydisDecoderInit failed\n"); return 1; };
 #else 
-    if (!bWow64) { printf("Process is noy under wow64\n"); return 1; }
+    if (!bWow64) { printf("Process is not under wow64\n"); return 1; }
     ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_COMPAT_32, ZYDIS_ADDRESS_WIDTH_32);
 #endif
     ZydisFormatter formatter;
